@@ -1,4 +1,4 @@
-name: AI Python PR Review (Azure OpenAI)
+name: AI Python PR Review (Azure AI Foundry)
 
 on:
   pull_request:
@@ -14,14 +14,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Get changed Python files
         run: |
           git fetch origin main
           git diff --name-only origin/main...HEAD | grep '\.py$' > files.txt || true
 
-      - name: Combine code
+      - name: Combine Python code
         run: |
           echo "" > code.txt
           if [ -s files.txt ]; then
@@ -34,23 +35,39 @@ jobs:
             echo "No Python files changed." >> code.txt
           fi
 
-      - name: Build request
+      - name: Build request.json (Foundry Responses API)
         run: |
-          jq -n --arg code "$(cat code.txt)" '{
-            messages: [
-              {
-                role: "system",
-                content: "You are a strict Python code reviewer. Check ONLY syntax, indentation, imports, and runtime errors."
-              },
-              {
-                role: "user",
-                content: $code
-              }
-            ],
-            temperature: 0
-          }' > request.json
+          PROMPT="You are a strict Python code reviewer.
 
-      - name: Call Azure OpenAI (Chat Completions)
+Check ONLY for:
+- Syntax errors
+- Indentation errors
+- Missing or invalid imports
+- Obvious runtime errors
+
+Respond EXACTLY in one of these formats:
+
+Issues Found:
+- File: <filename>
+  Line: <line number>
+  Issue: <what is wrong>
+  Fix: <how to fix>
+
+OR
+
+No syntax issues found. Code is safe to merge.
+"
+
+          jq -n \
+            --arg prompt "$PROMPT" \
+            --arg code "$(cat code.txt)" \
+            '{
+              input: ($prompt + "\n\nPython code:\n" + $code),
+              temperature: 0,
+              max_output_tokens: 500
+            }' > request.json
+
+      - name: Call Azure AI Foundry (Responses API)
         env:
           AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_KEY: ${{ secrets.AZURE_OPENAI_KEY }}
@@ -60,12 +77,12 @@ jobs:
             -H "api-key: $AZURE_OPENAI_KEY" \
             -d @request.json > response.json
 
-      - name: Extract response
+      - name: Extract AI response
         run: |
-          COMMENT=$(jq -r '.choices[0].message.content // "⚠️ No issues returned."' response.json)
+          COMMENT=$(jq -r '.output_text // "⚠️ AI review failed or returned empty output."' response.json)
           echo "$COMMENT" > comment.txt
 
-      - name: Post PR comment
+      - name: Post comment to Pull Request
         uses: actions/github-script@v7
         with:
           script: |
