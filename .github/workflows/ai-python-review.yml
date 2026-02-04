@@ -1,0 +1,135 @@
+name: AI Python PR Review (Azure AI Foundry)
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  ai-python-review:
+    runs-on: ubuntu-latest
+
+    steps:
+      # -------------------------------
+      # 1. Checkout code
+      # -------------------------------
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # -------------------------------
+      # 2. Get changed Python files
+      # -------------------------------
+      - name: Get changed Python files
+        run: |
+          git fetch origin main
+          git diff --name-only origin/main...HEAD | grep '\.py$' > files.txt || true
+
+      # -------------------------------
+      # 3. Combine Python files
+      # -------------------------------
+      - name: Combine Python code
+        run: |
+          echo "" > code.txt
+          if [ -s files.txt ]; then
+            while read file; do
+              echo "### File: $file" >> code.txt
+              cat "$file" >> code.txt
+              echo "" >> code.txt
+            done < files.txt
+          else
+            echo "No Python files changed." >> code.txt
+          fi
+
+      # -------------------------------
+      # 4. Build request.json (NO jq +)
+      # -------------------------------
+      - name: Build request.json
+        run: |
+          PROMPT=$(cat <<'EOF'
+You are a strict Python code reviewer.
+
+Check ONLY for:
+- Syntax errors
+- Indentation issues
+- Missing or invalid imports
+- Obvious runtime errors
+
+Do NOT refactor or optimize.
+
+Respond ONLY in one of these formats:
+
+Issues Found:
+- File:
+  Line:
+  Issue:
+  Fix:
+
+OR
+
+No syntax issues found. Code is safe to merge.
+
+Python code:
+EOF
+          )
+
+          PROMPT="$PROMPT\n\n$(cat code.txt)"
+
+          jq -n \
+            --arg content "$PROMPT" \
+            '{
+              model: "gpt-4o-mini",
+              messages: [
+                {
+                  role: "user",
+                  content: $content
+                }
+              ],
+              temperature: 0,
+              max_tokens: 500
+            }' > request.json
+
+      # -------------------------------
+      # 5. Call Azure AI Foundry
+      # -------------------------------
+      - name: Call Azure AI Foundry
+        env:
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_KEY: ${{ secrets.AZURE_OPENAI_KEY }}
+        run: |
+          curl --fail --max-time 60 -X POST "$AZURE_OPENAI_ENDPOINT" \
+            -H "Content-Type: application/json" \
+            -H "api-key: $AZURE_OPENAI_KEY" \
+            -d @request.json > response.json
+
+      # -------------------------------
+      # 6. Extract AI response
+      # -------------------------------
+      - name: Extract AI response
+        run: |
+          CONTENT=$(jq -r '.choices[0].message.content // empty' response.json)
+
+          if [ -z "$CONTENT" ]; then
+            echo "⚠️ Azure AI returned no response." > comment.txt
+          else
+            echo "$CONTENT" > comment.txt
+          fi
+
+      # -------------------------------
+      # 7. Post PR comment
+      # -------------------------------
+      - name: Post PR comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('comment.txt', 'utf8');
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body
+            });
