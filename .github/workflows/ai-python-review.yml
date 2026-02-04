@@ -1,4 +1,7 @@
 name: AI Python PR Review (Azure AI Foundry)
+on:
+  pull_request:
+  workflow_dispatch:
 
 on:
   pull_request:
