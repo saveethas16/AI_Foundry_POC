@@ -4,6 +4,7 @@ on:
   pull_request:
     types: [opened, synchronize]
 
+# 🔴 REQUIRED permissions to comment on PR
 permissions:
   contents: read
   pull-requests: write
@@ -19,6 +20,9 @@ jobs:
       - name: Fetch base branch
         run: git fetch origin ${{ github.base_ref }}
 
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
       - name: Collect changed Python files
         run: |
           git diff --name-only origin/${{ github.base_ref }} \
@@ -29,7 +33,7 @@ jobs:
             exit 0
           fi
 
-          mkdir review
+          mkdir -p review
           for file in $(cat python_files.txt); do
             echo "### File: $file" >> review/input.txt
             sed -n '1,300p' "$file" >> review/input.txt
@@ -39,38 +43,41 @@ jobs:
       - name: Call Azure AI Foundry (Python syntax check)
         env:
           ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
-          KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+          API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
           DEPLOYMENT: ${{ secrets.AZURE_OPENAI_DEPLOYMENT }}
         run: |
           PROMPT=$(cat <<EOF
-          You are a senior Python code reviewer.
+You are a senior Python code reviewer.
 
-          Review the code ONLY for:
-          - Syntax errors
-          - Indentation issues
-          - Invalid imports
-          - Obvious runtime errors
+Review the code ONLY for:
+- Syntax errors
+- Indentation issues
+- Invalid or missing imports
+- Obvious runtime errors
 
-          Respond EXACTLY in one of these formats:
+DO NOT suggest refactoring or optimization.
 
-          ❌ Issues Found:
-          - File:
-            Line:
-            Issue:
-            Fix:
+Respond in EXACTLY one of these formats:
 
-          OR
+❌ Issues Found:
+- File:
+  Line:
+  Issue:
+  Fix:
 
-          ✅ No syntax issues found. Code is safe to merge.
+OR
 
-          Code:
-          $(cat review/input.txt)
-          EOF
-          )
+✅ No syntax issues found. Code is safe to merge.
 
-          curl -s -X POST "$ENDPOINT/openai/deployments/$DEPLOYMENT/chat/completions?api-version=2024-05-01-preview" \
+Code:
+$(cat review/input.txt)
+EOF
+)
+
+          curl -s -X POST \
+            "$ENDPOINT/openai/deployments/$DEPLOYMENT/chat/completions?api-version=2024-05-01-preview" \
             -H "Content-Type: application/json" \
-            -H "api-key: $KEY" \
+            -H "api-key: $API_KEY" \
             -d "{
               \"messages\": [
                 {\"role\": \"system\", \"content\": \"You are a strict Python syntax checker\"},
@@ -79,11 +86,14 @@ jobs:
               \"temperature\": 0.1
             }" > review/output.json
 
-      - name: Post AI comment to Pull Request
+      - name: Post AI review comment to Pull Request
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           COMMENT=$(jq -r '.choices[0].message.content' review/output.json)
 
-          gh pr comment ${{ github.event.pull_request.number }} \
-            --body "$COMMENT"
+          curl -s -X POST \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments \
+            -d "$(jq -n --arg body "$COMMENT" '{body: $body}')"
