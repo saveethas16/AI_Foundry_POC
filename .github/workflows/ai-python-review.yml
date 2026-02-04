@@ -14,37 +14,69 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # 1️⃣ Checkout PR code
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # 2️⃣ Get changed Python files
       - name: Get changed Python files
         run: |
           git fetch origin main
           git diff --name-only origin/main...HEAD | grep '\.py$' > files.txt || true
 
+      # 3️⃣ Combine Python code into one file
       - name: Combine Python code
         run: |
-          echo "" > code.txt
+          > code.txt
           if [ -s files.txt ]; then
             while read file; do
               echo "### File: $file" >> code.txt
               cat "$file" >> code.txt
-              echo -e "\n" >> code.txt
+              echo "" >> code.txt
             done < files.txt
           else
             echo "No Python files changed." >> code.txt
           fi
 
-      - name: Build request.json
+      # 4️⃣ Build request.json safely (NO jq errors)
+      - name: Build Azure OpenAI request
         run: |
-          jq -Rs '{
-            input:
-              "You are a strict Python code reviewer.\n\nReview the following Python code ONLY for:\n- Syntax errors\n- Indentation issues\n- Invalid or missing imports\n- Obvious runtime errors\n\nDO NOT suggest refactoring or optimization.\n\nRespond in EXACTLY one of these formats:\n\nIssues Found:\n- File:\n  Line:\n  Issue:\n  Fix:\n\nOR\n\nNo syntax issues found. Code is safe to merge.\n\nPython code:\n\n" + .,
-            temperature: 0,
-            max_output_tokens: 500
-          }' code.txt > request.json
+          PROMPT="You are a strict Python code reviewer.
 
-      - name: Call Azure OpenAI (Responses API)
+Review the following Python code ONLY for:
+- Syntax errors
+- Indentation issues
+- Invalid or missing imports
+- Obvious runtime errors
+
+DO NOT suggest refactoring or optimization.
+
+Respond in EXACTLY one of these formats:
+
+Issues Found:
+- File:
+  Line:
+  Issue:
+  Fix:
+
+OR
+
+No syntax issues found. Code is safe to merge.
+
+Python code:
+"
+
+          jq -n \
+            --arg prompt "$PROMPT" \
+            --arg code "$(cat code.txt)" \
+            '{
+              input: ($prompt + "\n\n" + $code),
+              temperature: 0,
+              max_output_tokens: 500
+            }' > request.json
+
+      # 5️⃣ Call Azure OpenAI (Responses API)
+      - name: Call Azure OpenAI
         env:
           AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_KEY: ${{ secrets.AZURE_OPENAI_KEY }}
@@ -52,9 +84,9 @@ jobs:
           curl -s -X POST "$AZURE_OPENAI_ENDPOINT" \
             -H "Content-Type: application/json" \
             -H "api-key: $AZURE_OPENAI_KEY" \
-            -d @request.json \
-            -o response.json
+            -d @request.json > response.json
 
+      # 6️⃣ Extract AI response safely
       - name: Extract AI response
         run: |
           CONTENT=$(jq -r '.output[0].content[0].text // empty' response.json)
@@ -67,16 +99,17 @@ jobs:
             echo "$CONTENT" > comment.txt
           fi
 
+      # 7️⃣ Post comment to PR (NO blank body error)
       - name: Post AI comment to Pull Request
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
-            const body = fs.readFileSync('comment.txt', 'utf8');
+            const body = fs.readFileSync('comment.txt', 'utf8').trim();
 
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body
+              body: body || "⚠️ AI review produced no output."
             });
