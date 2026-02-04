@@ -1,16 +1,16 @@
-name: AI Python PR Review
+name: AI Python PR Review (Azure AI Foundry)
 
 on:
   pull_request:
     types: [opened, synchronize]
 
 permissions:
+  contents: read
   pull-requests: write
   issues: write
-  contents: read
 
 jobs:
-  python-review:
+  ai-python-review:
     runs-on: ubuntu-latest
 
     steps:
@@ -18,7 +18,6 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Get changed Python files
-        id: files
         run: |
           git fetch origin main
           git diff --name-only origin/main...HEAD | grep '\.py$' > files.txt || true
@@ -26,31 +25,26 @@ jobs:
       - name: Combine Python code
         run: |
           echo "" > code.txt
-          while read file; do
-            echo "### File: $file" >> code.txt
-            cat "$file" >> code.txt
-            echo -e "\n" >> code.txt
-          done < files.txt
+          if [ -s files.txt ]; then
+            while read file; do
+              echo "### File: $file" >> code.txt
+              cat "$file" >> code.txt
+              echo -e "\n" >> code.txt
+            done < files.txt
+          else
+            echo "No Python files changed." >> code.txt
+          fi
 
-      - name: Call Azure OpenAI
+      - name: Call Azure OpenAI (Responses API)
         env:
           AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_KEY: ${{ secrets.AZURE_OPENAI_KEY }}
         run: |
           cat <<EOF > request.json
           {
-            "messages": [
-              {
-                "role": "system",
-                "content": "You are a strict Python code reviewer. You MUST always return a response. Never return null or empty output."
-              },
-              {
-                "role": "user",
-                "content": "Review the following Python code ONLY for:\n- Syntax errors\n- Indentation issues\n- Invalid or missing imports\n- Obvious runtime errors\n\nDO NOT suggest refactoring or optimization.\n\nRespond in EXACTLY one of these formats:\n\nIssues Found:\n- File:\n  Line:\n  Issue:\n  Fix:\n\nOR\n\nNo syntax issues found. Code is safe to merge.\n\nPython code:\n\n$(cat code.txt)"
-              }
-            ],
+            "input": "You are a strict Python code reviewer.\n\nReview the following Python code ONLY for:\n- Syntax errors\n- Indentation issues\n- Invalid or missing imports\n- Obvious runtime errors\n\nDO NOT suggest refactoring or optimization.\n\nRespond in EXACTLY one of these formats:\n\nIssues Found:\n- File:\n  Line:\n  Issue:\n  Fix:\n\nOR\n\nNo syntax issues found. Code is safe to merge.\n\nPython code:\n\n$(cat code.txt)",
             "temperature": 0,
-            "max_tokens": 500
+            "max_output_tokens": 500
           }
           EOF
 
@@ -61,9 +55,9 @@ jobs:
 
       - name: Extract AI response safely
         run: |
-          CONTENT=$(jq -r '.choices[0].message.content' response.json)
+          CONTENT=$(jq -r '.output_text // empty' response.json)
 
-          if [ "$CONTENT" = "null" ] || [ -z "$CONTENT" ]; then
+          if [ -z "$CONTENT" ]; then
             echo "⚠️ AI review failed or returned empty output." > comment.txt
             echo "" >> comment.txt
             echo "Please verify Azure OpenAI deployment, endpoint, or API key." >> comment.txt
@@ -82,5 +76,5 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body: body
+              body
             });
