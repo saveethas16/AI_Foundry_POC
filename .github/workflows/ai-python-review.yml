@@ -40,9 +40,11 @@ jobs:
           AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_KEY: ${{ secrets.AZURE_OPENAI_KEY }}
         run: |
+          CODE=$(jq -Rs . < code.txt)
+
           cat <<EOF > request.json
           {
-            "input": "You are a strict Python code reviewer.\n\nReview the following Python code ONLY for:\n- Syntax errors\n- Indentation issues\n- Invalid or missing imports\n- Obvious runtime errors\n\nDO NOT suggest refactoring or optimization.\n\nRespond in EXACTLY one of these formats:\n\nIssues Found:\n- File:\n  Line:\n  Issue:\n  Fix:\n\nOR\n\nNo syntax issues found. Code is safe to merge.\n\nPython code:\n\n$(cat code.txt)",
+            "input": "You are a strict Python code reviewer.\n\nReview the following Python code ONLY for:\n- Syntax errors\n- Indentation issues\n- Invalid or missing imports\n- Obvious runtime errors\n\nDO NOT suggest refactoring or optimization.\n\nRespond in EXACTLY one of these formats:\n\nIssues Found:\n- File:\n  Line:\n  Issue:\n  Fix:\n\nOR\n\nNo syntax issues found. Code is safe to merge.\n\nPython code:\n\n" + $CODE,
             "temperature": 0,
             "max_output_tokens": 500
           }
@@ -52,6 +54,7 @@ jobs:
             -H "Content-Type: application/json" \
             -H "api-key: $AZURE_OPENAI_KEY" \
             -d @request.json > response.json
+
 
       - name: Extract AI response safely
         run: |
