@@ -1,0 +1,85 @@
+name: AI Python PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  python-review:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Fetch base branch
+        run: git fetch origin ${{ github.base_ref }}
+
+      - name: Collect changed Python files
+        run: |
+          git diff --name-only origin/${{ github.base_ref }} \
+            | grep '\.py$' > python_files.txt || true
+
+          if [ ! -s python_files.txt ]; then
+            echo "No Python files changed"
+            exit 0
+          fi
+
+          mkdir review
+          for file in $(cat python_files.txt); do
+            echo "### File: $file" >> review/input.txt
+            sed -n '1,300p' "$file" >> review/input.txt
+            echo "" >> review/input.txt
+          done
+
+      - name: Call Azure AI Foundry (Python syntax check)
+        env:
+          ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+          DEPLOYMENT: ${{ secrets.AZURE_OPENAI_DEPLOYMENT }}
+        run: |
+          PROMPT=$(cat <<EOF
+          You are a senior Python code reviewer.
+
+          Review the code ONLY for:
+          - Syntax errors
+          - Indentation issues
+          - Invalid imports
+          - Obvious runtime errors
+
+          Respond EXACTLY in one of these formats:
+
+          ❌ Issues Found:
+          - File:
+            Line:
+            Issue:
+            Fix:
+
+          OR
+
+          ✅ No syntax issues found. Code is safe to merge.
+
+          Code:
+          $(cat review/input.txt)
+          EOF
+          )
+
+          curl -s -X POST "$ENDPOINT/openai/deployments/$DEPLOYMENT/chat/completions?api-version=2024-05-01-preview" \
+            -H "Content-Type: application/json" \
+            -H "api-key: $KEY" \
+            -d "{
+              \"messages\": [
+                {\"role\": \"system\", \"content\": \"You are a strict Python syntax checker\"},
+                {\"role\": \"user\", \"content\": \"$PROMPT\"}
+              ],
+              \"temperature\": 0.1
+            }" > review/output.json
+
+      - name: Post AI comment to Pull Request
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          COMMENT=$(jq -r '.choices[0].message.content' review/output.json)
+
+          gh pr comment ${{ github.event.pull_request.number }} \
+            --body "$COMMENT"
