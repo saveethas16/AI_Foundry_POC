@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1️⃣ Checkout PR code
+      # 1️⃣ Checkout code
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -24,10 +24,10 @@ jobs:
           git fetch origin main
           git diff --name-only origin/main...HEAD | grep '\.py$' > files.txt || true
 
-      # 3️⃣ Combine Python code into one file
+      # 3️⃣ Combine Python code
       - name: Combine Python code
         run: |
-          > code.txt
+          echo "" > code.txt
           if [ -s files.txt ]; then
             while read file; do
               echo "### File: $file" >> code.txt
@@ -38,10 +38,12 @@ jobs:
             echo "No Python files changed." >> code.txt
           fi
 
-      # 4️⃣ Build request.json safely (NO jq errors)
+      # 4️⃣ Build request.json (YAML-safe, jq-safe)
       - name: Build Azure OpenAI request
         run: |
-          PROMPT="You are a strict Python code reviewer.
+          jq -n \
+          --arg input "$(cat << 'EOF'
+You are a strict Python code reviewer.
 
 Review the following Python code ONLY for:
 - Syntax errors
@@ -64,18 +66,15 @@ OR
 No syntax issues found. Code is safe to merge.
 
 Python code:
-"
+EOF
+          )$(cat code.txt)" \
+          '{
+            input: $input,
+            temperature: 0,
+            max_output_tokens: 500
+          }' > request.json
 
-          jq -n \
-            --arg prompt "$PROMPT" \
-            --arg code "$(cat code.txt)" \
-            '{
-              input: ($prompt + "\n\n" + $code),
-              temperature: 0,
-              max_output_tokens: 500
-            }' > request.json
-
-      # 5️⃣ Call Azure OpenAI (Responses API)
+      # 5️⃣ Call Azure OpenAI
       - name: Call Azure OpenAI
         env:
           AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
@@ -86,21 +85,19 @@ Python code:
             -H "api-key: $AZURE_OPENAI_KEY" \
             -d @request.json > response.json
 
-      # 6️⃣ Extract AI response safely
+      # 6️⃣ Extract AI response
       - name: Extract AI response
         run: |
-          CONTENT=$(jq -r '.output[0].content[0].text // empty' response.json)
+          REVIEW=$(jq -r '.output[0].content[0].text // empty' response.json)
 
-          if [ -z "$CONTENT" ]; then
-            echo "⚠️ AI review failed or returned empty output." > comment.txt
-            echo "" >> comment.txt
-            echo "Please verify Azure OpenAI deployment, endpoint, or API key." >> comment.txt
+          if [ -z "$REVIEW" ]; then
+            echo "⚠️ AI review returned no output." > comment.txt
           else
-            echo "$CONTENT" > comment.txt
+            echo "$REVIEW" > comment.txt
           fi
 
-      # 7️⃣ Post comment to PR (NO blank body error)
-      - name: Post AI comment to Pull Request
+      # 7️⃣ Post comment to PR
+      - name: Post AI comment
         uses: actions/github-script@v7
         with:
           script: |
