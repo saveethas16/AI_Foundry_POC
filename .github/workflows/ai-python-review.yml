@@ -35,9 +35,12 @@ jobs:
             echo "No Python files changed." >> code.txt
           fi
 
-      - name: Build request.json (jq-safe)
+      - name: Build request.json (NO jq concatenation)
         run: |
-          PROMPT="You are a strict Python code reviewer.
+          PROMPT_FILE=prompt.txt
+
+          cat <<'EOF' > $PROMPT_FILE
+You are a strict Python code reviewer.
 
 Check ONLY for:
 - Syntax errors
@@ -55,17 +58,20 @@ Issues Found:
 
 Otherwise respond:
 No syntax issues found. Code is safe to merge.
-"
+
+Python code:
+EOF
+
+          cat $PROMPT_FILE code.txt > full_prompt.txt
 
           jq -n \
-            --arg prompt "$PROMPT" \
-            --arg code "$(cat code.txt)" \
+            --arg content "$(cat full_prompt.txt)" \
             '{
               model: "gpt-4o-mini",
               input: [
                 {
                   role: "user",
-                  content: ($prompt + "\n\nPython code:\n\n" + $code)
+                  content: $content
                 }
               ],
               max_output_tokens: 500
